@@ -49,3 +49,5 @@ vendor/
 # --- Системный мусор ---
 .DS_Store
 Thumbs.db
+
+node_modules

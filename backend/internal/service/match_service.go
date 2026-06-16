@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -62,11 +63,33 @@ type APIFootballResponse struct {
 	} `json:"response"`
 }
 
+func getEnvString(name, fallback string) string {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
 func (s *MatchService) FetchDailyMatches() error {
-	today := time.Now().Format("2006-01-02")
+	from := getEnvString("FIXTURES_FROM", "")
+	to := getEnvString("FIXTURES_TO", "")
+
+	if from == "" || to == "" {
+		from = time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+		to = time.Now().AddDate(0, 0, 14).Format("2006-01-02")
+	}
 
 	for _, leagueID := range s.leagues {
-		url := fmt.Sprintf("%s/fixtures?date=%s&league=%d&season=%d", s.baseURL, today, leagueID, s.season)
+		url := fmt.Sprintf(
+			"%s/fixtures?from=%s&to=%s&league=%d&season=%d",
+			s.baseURL,
+			from,
+			to,
+			leagueID,
+			s.season,
+		)
+
 		apiResp, err := s.fetchFixtures(url)
 		if err != nil {
 			return err
@@ -80,6 +103,7 @@ func (s *MatchService) FetchDailyMatches() error {
 
 		matchesToSave := make([]domain.Match, 0, len(apiResp.Response))
 		finishedResults := make([]finishedResult, 0)
+
 		for _, item := range apiResp.Response {
 			matchTime, err := time.Parse(time.RFC3339, item.Fixture.Date)
 			if err != nil {
@@ -88,6 +112,7 @@ func (s *MatchService) FetchDailyMatches() error {
 
 			status := mapAPIStatus(item.Fixture.Status.Short)
 			outcome := ""
+
 			if status == "FINISHED" && item.Goals.Home != nil && item.Goals.Away != nil {
 				outcome = calculateOutcome(*item.Goals.Home, *item.Goals.Away)
 				finishedResults = append(finishedResults, finishedResult{
