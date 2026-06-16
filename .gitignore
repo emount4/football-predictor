@@ -1,0 +1,51 @@
+# --- Бинарники и сборка Go ---
+bin/
+dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+# Скомпилированный локально исполняемый файл
+main
+football-predictor
+
+# --- Локальная база данных (SQLite) ---
+# Исключаем файлы БД, чтобы случайно не запушить локальные тесты и данные в Git
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# --- Конфигурации и секреты ---
+# Сюда прячем токены от API-Football и Telegram бота
+.env
+*.local
+config.yaml
+config.json
+!config.example.yaml
+!config.example.json
+
+# --- Внутренние файлы IDE / Редакторов ---
+# JetBrains (GoLand / WebStorm)
+.idea/
+*.iws
+*.iml
+*.ipr
+
+# Visual Studio Code
+.vscode/
+!.vscode/extensions.json
+*.code-workspace
+
+# --- Логи и временные файлы ---
+*.log
+logs/
+tmp/
+vendor/
+
+# --- Системный мусор ---
+.DS_Store
+Thumbs.db
