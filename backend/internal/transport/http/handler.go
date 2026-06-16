@@ -71,11 +71,14 @@ func (h *Handler) getMatches(c *gin.Context) {
 		return
 	}
 
-	matches, err := h.matchService.GetMatchesForUser(user.TgID)
+	status := c.DefaultQuery("status", "active")
+
+	matches, err := h.matchService.GetMatchesForUser(user.TgID, status)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Не удалось загрузить матчи"})
 		return
 	}
+
 	c.JSON(http.StatusOK, matches)
 }
 
