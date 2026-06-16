@@ -20,7 +20,7 @@ function App() {
   const [page, setPage] = useState<AppPage>(() => getPageFromHash());
   const [me, setMe] = useState<UserProfile | null>(null);
   const [matches, setMatches] = useState<MatchForUser[]>([]);
-  const [results, setResults] = useState<PredictionHistoryItem[]>([]);
+  const [results, setResults] = useState<MatchForUser[]>([]);
   const [leaderboard, setLeaderboard] = useState<LeaderboardItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionMatchID, setActionMatchID] = useState<number | null>(null);
@@ -43,7 +43,7 @@ function App() {
       }
 
       if (page === "results") {
-        const data = await api.getMyResults("finished");
+        const data = await api.getMatches("finished");
         setResults(data);
       }
 
@@ -96,7 +96,7 @@ function App() {
       <section className="hero-card">
         <div>
           <p className="eyebrow">Football Predictor</p>
-          <h1>Прогнозы без шума</h1>
+          <h1>Прогнозы</h1>
           <p className="subtitle">Выбирай исход матча, смотри результаты и держись в топе лидерборда.</p>
         </div>
 
@@ -209,35 +209,43 @@ function MatchesPage({
   );
 }
 
-function ResultsPage({ results }: { results: PredictionHistoryItem[] }) {
+function ResultsPage({ results }: { results: MatchForUser[] }) {
   if (results.length === 0) {
-    return <EmptyState title="Результатов пока нет" text="Завершенные прогнозы появятся здесь после окончания матчей." />;
+    return (
+      <EmptyState
+        title="Результатов пока нет"
+        text="Завершенные матчи появятся здесь после загрузки результатов."
+      />
+    );
   }
 
   return (
     <section className="grid-list">
-      {results.map((item) => (
-        <article className="match-card" key={`${item.match_id}-${item.user_choice}`}>
+      {results.map((match) => (
+        <article className="match-card" key={match.api_id}>
           <div className="card-topline">
-            <span>{item.league_name}</span>
-            <StatusBadge status={item.status} />
+            <span>{match.league_name}</span>
+            <StatusBadge status={match.status} />
           </div>
 
           <div className="score-row">
-            <span>{item.home_team}</span>
-            <strong>
-              {formatScore(item.home_goals, item.away_goals)}
-            </strong>
-            <span>{item.away_team}</span>
+            <span>{match.home_team}</span>
+            <strong>{formatScore(match.home_goals, match.away_goals)}</strong>
+            <span>{match.away_team}</span>
           </div>
 
           <div className="result-footer">
             <span>
-              Твой прогноз: <strong>{choiceLabel(item.user_choice)}</strong>
+              Исход: <strong>{match.outcome ? choiceLabel(match.outcome as PredictionChoice) : "—"}</strong>
             </span>
-            <span className={item.is_correct ? "result-ok" : "result-bad"}>
-              {item.is_correct ? `+${item.points_awarded} очко` : "0 очков"}
-            </span>
+
+            {match.my_prediction ? (
+              <span>
+                Твой прогноз: <strong>{choiceLabel(match.my_prediction)}</strong>
+              </span>
+            ) : (
+              <span>Без прогноза</span>
+            )}
           </div>
         </article>
       ))}

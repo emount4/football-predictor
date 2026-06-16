@@ -4,7 +4,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"football-predictor/internal/repository"
@@ -16,10 +15,6 @@ import (
 )
 
 func main() {
-	// Работает и при запуске из backend:
-	//   go run ./cmd/server
-	// и при запуске из корня:
-	//   go run ./backend/cmd/server
 	_ = godotenv.Load(".env", "backend/.env")
 
 	dbPath := getEnv("DB_PATH", filepath.Join("data", "football.db"))
@@ -30,13 +25,12 @@ func main() {
 		log.Fatal("BOT_TOKEN is required")
 	}
 
-	apiKey := strings.TrimSpace(os.Getenv("API_SPORTS_KEY"))
-	if apiKey == "" {
-		log.Println("warning: API_SPORTS_KEY is empty; match sync from API-Sports will fail")
+	footballDataToken := strings.TrimSpace(os.Getenv("FOOTBALL_DATA_TOKEN"))
+	if footballDataToken == "" {
+		log.Fatal("FOOTBALL_DATA_TOKEN is required")
 	}
 
 	port := getEnv("PORT", "8080")
-	leagues := parseLeagues(getEnv("API_LEAGUES", "39"))
 
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		log.Fatalf("failed to create db directory: %v", err)
@@ -48,7 +42,7 @@ func main() {
 	}
 
 	authService := service.NewAuthService(repo, botToken)
-	matchService := service.NewMatchService(repo, apiKey, leagues)
+	matchService := service.NewMatchService(repo, footballDataToken)
 	predictService := service.NewPredictService(repo, repo)
 
 	if getEnv("ENABLE_WORKER", "true") == "true" {
@@ -70,29 +64,4 @@ func getEnv(name, fallback string) string {
 		return fallback
 	}
 	return value
-}
-
-func parseLeagues(raw string) []int {
-	parts := strings.Split(raw, ",")
-	leagues := make([]int, 0, len(parts))
-
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-
-		leagueID, err := strconv.Atoi(part)
-		if err != nil || leagueID <= 0 {
-			continue
-		}
-
-		leagues = append(leagues, leagueID)
-	}
-
-	if len(leagues) == 0 {
-		return []int{39}
-	}
-
-	return leagues
 }

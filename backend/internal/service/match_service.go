@@ -14,86 +14,109 @@ import (
 )
 
 type MatchService struct {
-	repo    *repository.Repository
-	apiKey  string
-	leagues []int
-	baseURL string
-	season  int
-	client  *http.Client
+	repo         *repository.Repository
+	apiToken     string
+	competitions []string
+	baseURL      string
+	daysAhead    int
+	client       *http.Client
 }
 
-func NewMatchService(r *repository.Repository, apiKey string, leagues []int) *MatchService {
+func NewMatchService(r *repository.Repository, apiToken string) *MatchService {
 	return &MatchService{
-		repo:    r,
-		apiKey:  apiKey,
-		leagues: leagues,
-		baseURL: "https://v3.football.api-sports.io",
-		season:  getSeason(),
+		repo:         r,
+		apiToken:     strings.TrimSpace(apiToken),
+		competitions: parseCompetitions(getEnvString("FOOTBALL_DATA_COMPETITIONS", "CL,WC")),
+		baseURL:      "https://api.football-data.org/v4",
+		daysAhead:    getEnvInt("FOOTBALL_DATA_DAYS_AHEAD", 7),
 		client: &http.Client{
 			Timeout: 15 * time.Second,
 		},
 	}
 }
 
-type APIFootballResponse struct {
-	Response []struct {
-		Fixture struct {
-			ID     int64  `json:"id"`
-			Date   string `json:"date"`
-			Status struct {
-				Short string `json:"short"`
-			} `json:"status"`
-		} `json:"fixture"`
-		League struct {
-			ID   int    `json:"id"`
-			Name string `json:"name"`
-		} `json:"league"`
-		Teams struct {
-			Home struct {
-				Name string `json:"name"`
-			} `json:"home"`
-			Away struct {
-				Name string `json:"name"`
-			} `json:"away"`
-		} `json:"teams"`
-		Goals struct {
-			Home *int `json:"home"`
-			Away *int `json:"away"`
-		} `json:"goals"`
-	} `json:"response"`
+type FootballDataMatchesResponse struct {
+	Filters   map[string]any `json:"filters"`
+	ResultSet struct {
+		Count int `json:"count"`
+	} `json:"resultSet"`
+	Competition struct {
+		ID     int    `json:"id"`
+		Name   string `json:"name"`
+		Code   string `json:"code"`
+		Emblem string `json:"emblem"`
+	} `json:"competition"`
+	Matches []FootballDataMatch `json:"matches"`
 }
 
-func getEnvString(name, fallback string) string {
-	value := strings.TrimSpace(os.Getenv(name))
-	if value == "" {
-		return fallback
-	}
-	return value
+type FootballDataMatch struct {
+	ID          int64  `json:"id"`
+	UTCDate     string `json:"utcDate"`
+	Status      string `json:"status"`
+	Matchday    int    `json:"matchday"`
+	Stage       string `json:"stage"`
+	LastUpdated string `json:"lastUpdated"`
+
+	Competition struct {
+		ID     int    `json:"id"`
+		Name   string `json:"name"`
+		Code   string `json:"code"`
+		Emblem string `json:"emblem"`
+	} `json:"competition"`
+
+	HomeTeam struct {
+		ID        int    `json:"id"`
+		Name      string `json:"name"`
+		ShortName string `json:"shortName"`
+		TLA       string `json:"tla"`
+		Crest     string `json:"crest"`
+	} `json:"homeTeam"`
+
+	AwayTeam struct {
+		ID        int    `json:"id"`
+		Name      string `json:"name"`
+		ShortName string `json:"shortName"`
+		TLA       string `json:"tla"`
+		Crest     string `json:"crest"`
+	} `json:"awayTeam"`
+
+	Score struct {
+		Winner   string `json:"winner"`
+		Duration string `json:"duration"`
+		FullTime struct {
+			Home *int `json:"home"`
+			Away *int `json:"away"`
+		} `json:"fullTime"`
+	} `json:"score"`
 }
 
 func (s *MatchService) FetchDailyMatches() error {
-	from := getEnvString("FIXTURES_FROM", "")
-	to := getEnvString("FIXTURES_TO", "")
+	from := time.Now().UTC().Format("2006-01-02")
+	to := time.Now().UTC().AddDate(0, 0, s.daysAhead).Format("2006-01-02")
 
-	if from == "" || to == "" {
-		from = time.Now().AddDate(0, 0, -1).Format("2006-01-02")
-		to = time.Now().AddDate(0, 0, 14).Format("2006-01-02")
-	}
-
-	for _, leagueID := range s.leagues {
+	for _, competition := range s.competitions {
 		url := fmt.Sprintf(
-			"%s/fixtures?from=%s&to=%s&league=%d&season=%d",
+			"%s/competitions/%s/matches?dateFrom=%s&dateTo=%s",
 			s.baseURL,
+			competition,
 			from,
 			to,
-			leagueID,
-			s.season,
 		)
 
-		apiResp, err := s.fetchFixtures(url)
+		fmt.Printf("football-data fetch: %s\n", url)
+
+		apiResp, err := s.fetchFootballDataMatches(url)
 		if err != nil {
 			return err
 		}
+
+		fmt.Printf(
+			"football-data loaded: competition=%s from=%s to=%s results=%d\n",
+			competition,
+			from,
+			to,
+			len(apiResp.Matches),
+		)
 
 		type finishedResult struct {
 			matchID int64
@@ -101,37 +124,48 @@ func (s *MatchService) FetchDailyMatches() error {
 			away    int
 		}
 
-		matchesToSave := make([]domain.Match, 0, len(apiResp.Response))
+		matchesToSave := make([]domain.Match, 0, len(apiResp.Matches))
 		finishedResults := make([]finishedResult, 0)
 
-		for _, item := range apiResp.Response {
-			matchTime, err := time.Parse(time.RFC3339, item.Fixture.Date)
+		for _, item := range apiResp.Matches {
+			matchTime, err := time.Parse(time.RFC3339, item.UTCDate)
 			if err != nil {
 				continue
 			}
 
-			status := mapAPIStatus(item.Fixture.Status.Short)
+			status := mapFootballDataStatus(item.Status)
+			homeGoals := item.Score.FullTime.Home
+			awayGoals := item.Score.FullTime.Away
 			outcome := ""
 
-			if status == "FINISHED" && item.Goals.Home != nil && item.Goals.Away != nil {
-				outcome = calculateOutcome(*item.Goals.Home, *item.Goals.Away)
+			if status == "FINISHED" && homeGoals != nil && awayGoals != nil {
+				outcome = calculateOutcome(*homeGoals, *awayGoals)
 				finishedResults = append(finishedResults, finishedResult{
-					matchID: item.Fixture.ID,
-					home:    *item.Goals.Home,
-					away:    *item.Goals.Away,
+					matchID: item.ID,
+					home:    *homeGoals,
+					away:    *awayGoals,
 				})
 			}
 
+			leagueID := item.Competition.ID
+			leagueName := item.Competition.Name
+			if leagueID == 0 {
+				leagueID = apiResp.Competition.ID
+			}
+			if leagueName == "" {
+				leagueName = apiResp.Competition.Name
+			}
+
 			matchesToSave = append(matchesToSave, domain.Match{
-				APIID:      item.Fixture.ID,
-				LeagueID:   item.League.ID,
-				LeagueName: item.League.Name,
-				HomeTeam:   item.Teams.Home.Name,
-				AwayTeam:   item.Teams.Away.Name,
+				APIID:      item.ID,
+				LeagueID:   leagueID,
+				LeagueName: leagueName,
+				HomeTeam:   cleanTeamName(item.HomeTeam.Name, item.HomeTeam.ShortName),
+				AwayTeam:   cleanTeamName(item.AwayTeam.Name, item.AwayTeam.ShortName),
 				MatchTime:  matchTime,
 				Status:     status,
-				HomeGoals:  item.Goals.Home,
-				AwayGoals:  item.Goals.Away,
+				HomeGoals:  homeGoals,
+				AwayGoals:  awayGoals,
 				Outcome:    outcome,
 			})
 		}
@@ -218,17 +252,23 @@ func (s *MatchService) ProcessFinishedMatches() error {
 }
 
 func (s *MatchService) RecalculateMatch(matchID int64) error {
-	item, err := s.fetchFixtureByID(matchID)
+	item, err := s.fetchFootballDataMatchByID(matchID)
 	if err != nil {
 		return err
 	}
 
-	status := mapAPIStatus(item.Fixture.Status.Short)
-	if status != "FINISHED" || item.Goals.Home == nil || item.Goals.Away == nil {
+	status := mapFootballDataStatus(item.Status)
+	if status != "FINISHED" ||
+		item.Score.FullTime.Home == nil ||
+		item.Score.FullTime.Away == nil {
 		return errors.New("match is not finished yet")
 	}
 
-	return s.applyFinishedMatch(matchID, *item.Goals.Home, *item.Goals.Away)
+	return s.applyFinishedMatch(
+		matchID,
+		*item.Score.FullTime.Home,
+		*item.Score.FullTime.Away,
+	)
 }
 
 func (s *MatchService) applyFinishedMatch(matchID int64, homeGoals, awayGoals int) error {
@@ -253,75 +293,15 @@ func (s *MatchService) applyFinishedMatch(matchID int64, homeGoals, awayGoals in
 	return nil
 }
 
-func (s *MatchService) fetchFixtureByID(matchID int64) (struct {
-	Fixture struct {
-		ID     int64  `json:"id"`
-		Date   string `json:"date"`
-		Status struct {
-			Short string `json:"short"`
-		} `json:"status"`
-	} `json:"fixture"`
-	League struct {
-		ID   int    `json:"id"`
-		Name string `json:"name"`
-	} `json:"league"`
-	Teams struct {
-		Home struct {
-			Name string `json:"name"`
-		} `json:"home"`
-		Away struct {
-			Name string `json:"name"`
-		} `json:"away"`
-	} `json:"teams"`
-	Goals struct {
-		Home *int `json:"home"`
-		Away *int `json:"away"`
-	} `json:"goals"`
-}, error) {
-	var zero struct {
-		Fixture struct {
-			ID     int64  `json:"id"`
-			Date   string `json:"date"`
-			Status struct {
-				Short string `json:"short"`
-			} `json:"status"`
-		} `json:"fixture"`
-		League struct {
-			ID   int    `json:"id"`
-			Name string `json:"name"`
-		} `json:"league"`
-		Teams struct {
-			Home struct {
-				Name string `json:"name"`
-			} `json:"home"`
-			Away struct {
-				Name string `json:"name"`
-			} `json:"away"`
-		} `json:"teams"`
-		Goals struct {
-			Home *int `json:"home"`
-			Away *int `json:"away"`
-		} `json:"goals"`
-	}
+func (s *MatchService) fetchFootballDataMatchByID(matchID int64) (*FootballDataMatch, error) {
+	url := fmt.Sprintf("%s/matches/%d", s.baseURL, matchID)
 
-	url := fmt.Sprintf("%s/fixtures?id=%d", s.baseURL, matchID)
-	apiResp, err := s.fetchFixtures(url)
-	if err != nil {
-		return zero, err
-	}
-	if len(apiResp.Response) == 0 {
-		return zero, errors.New("match not found in external api")
-	}
-
-	return apiResp.Response[0], nil
-}
-
-func (s *MatchService) fetchFixtures(url string) (*APIFootballResponse, error) {
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Add("x-apisports-key", s.apiKey)
+
+	req.Header.Set("X-Auth-Token", s.apiToken)
 
 	resp, err := s.client.Do(req)
 	if err != nil {
@@ -330,10 +310,44 @@ func (s *MatchService) fetchFixtures(url string) (*APIFootballResponse, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("api-football returned status %d", resp.StatusCode)
+		var errBody map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&errBody)
+		return nil, fmt.Errorf("football-data returned status %d: %v", resp.StatusCode, errBody)
 	}
 
-	var apiResp APIFootballResponse
+	var match FootballDataMatch
+	if err := json.NewDecoder(resp.Body).Decode(&match); err != nil {
+		return nil, err
+	}
+
+	return &match, nil
+}
+
+func (s *MatchService) fetchFootballDataMatches(url string) (*FootballDataMatchesResponse, error) {
+	if strings.TrimSpace(s.apiToken) == "" {
+		return nil, errors.New("FOOTBALL_DATA_TOKEN is empty")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("X-Auth-Token", s.apiToken)
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var errBody map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&errBody)
+		return nil, fmt.Errorf("football-data returned status %d: %v", resp.StatusCode, errBody)
+	}
+
+	var apiResp FootballDataMatchesResponse
 	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
 		return nil, err
 	}
@@ -351,25 +365,69 @@ func calculateOutcome(homeGoals, awayGoals int) string {
 	return "X"
 }
 
-func mapAPIStatus(short string) string {
-	switch short {
-	case "FT", "AET", "PEN":
+func mapFootballDataStatus(status string) string {
+	switch strings.ToUpper(strings.TrimSpace(status)) {
+	case "FINISHED":
 		return "FINISHED"
-	case "NS", "TBD":
-		return "SCHEDULED"
-	default:
+	case "IN_PLAY", "PAUSED":
 		return "LIVE"
+	case "SCHEDULED", "TIMED":
+		return "SCHEDULED"
+	case "POSTPONED", "SUSPENDED", "CANCELLED":
+		return "CANCELLED"
+	default:
+		return "SCHEDULED"
 	}
 }
 
-func getSeason() int {
-	seasonRaw := os.Getenv("API_SEASON")
-	if seasonRaw == "" {
-		return 2025
+func cleanTeamName(name, shortName string) string {
+	name = strings.TrimSpace(name)
+	shortName = strings.TrimSpace(shortName)
+
+	if shortName != "" {
+		return shortName
 	}
-	season, err := strconv.Atoi(seasonRaw)
-	if err != nil || season <= 0 {
-		return 2025
+
+	return name
+}
+
+func parseCompetitions(raw string) []string {
+	parts := strings.Split(raw, ",")
+	result := make([]string, 0, len(parts))
+
+	for _, part := range parts {
+		part = strings.ToUpper(strings.TrimSpace(part))
+		if part == "" {
+			continue
+		}
+		result = append(result, part)
 	}
-	return season
+
+	if len(result) == 0 {
+		return []string{"CL", "WC"}
+	}
+
+	return result
+}
+
+func getEnvString(name, fallback string) string {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func getEnvInt(name string, fallback int) int {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		return fallback
+	}
+
+	return value
 }
