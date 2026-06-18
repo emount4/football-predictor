@@ -404,4 +404,161 @@ curl https://ИМЯ.fly.dev/health
 # BotFather: Menu Button / newapp → https://ИМЯ.fly.dev
 ```
 
+---
+
+## Деплой на Vercel (только фронт) + API на Fly.io
+
+**На одном Vercel всё не получится** — этот проект не serverless:
+
+| Компонент | Vercel | Почему |
+|-----------|--------|--------|
+| React-фронт | да | статика, бесплатно |
+| Go API (Gin) | нет | нужен постоянно работающий сервер |
+| SQLite | нет | нет постоянного диска на serverless |
+| Worker (cron) | нет | нет фоновых процессов |
+
+Рабочая схема: **фронт на Vercel**, **бэкенд на Fly.io** (бесплатно).
+
+```
+Telegram Mini App
+       │
+       ▼
+https://твой-проект.vercel.app   ← фронт (Vercel)
+       │
+       ▼  API-запросы
+https://твой-api.fly.dev/api/... ← бэкенд (Fly.io) + SQLite
+```
+
+### Шаг 1. Задеплой API на Fly.io (без фронта)
+
+Создай **отдельное** приложение для API, например `football-predictor-api`:
+
+```bash
+fly auth login
+```
+
+Скопируй `fly.toml` или создай новый:
+
+```bash
+fly launch --no-deploy --name football-predictor-api
+```
+
+В `fly.toml` для API-приложения **убери раздачу статики** и задай CORS (подставишь URL Vercel после деплоя фронта):
+
+```toml
+app = "football-predictor-api"
+primary_region = "ams"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+  DB_PATH = "/data/football.db"
+  SCHEMA_PATH = "internal/repository/schema.sql"
+  STATIC_DIR = ""
+  ENABLE_WORKER = "true"
+  FOOTBALL_DATA_COMPETITIONS = "CL,WC"
+  FOOTBALL_DATA_DAYS_AHEAD = "7"
+  CORS_ORIGIN = "https://твой-проект.vercel.app"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+
+[[mounts]]
+  source = "football_data"
+  destination = "/data"
+```
+
+```bash
+fly volumes create football_data --region ams --size 1 -a football-predictor-api
+fly secrets set BOT_TOKEN="..." FOOTBALL_DATA_TOKEN="..." -a football-predictor-api
+fly deploy -a football-predictor-api
+```
+
+Проверка:
+
+```bash
+curl https://football-predictor-api.fly.dev/health
+```
+
+Запомни URL API: `https://football-predictor-api.fly.dev`
+
+### Шаг 2. Задеплой фронт на Vercel
+
+1. Залей репозиторий на **GitHub**
+2. Зайди на [vercel.com](https://vercel.com) → **Add New Project** → импортируй репозиторий
+3. Настройки сборки:
+
+| Поле | Значение |
+|------|----------|
+| Root Directory | `frontend` |
+| Framework Preset | Vite |
+| Build Command | `npm run build` |
+| Output Directory | `dist` |
+
+4. **Environment Variables** (важно — именно на этапе сборки):
+
+| Имя | Значение |
+|-----|----------|
+| `VITE_API_BASE_URL` | `https://football-predictor-api.fly.dev` |
+
+Без `https://`, без слэша в конце.
+
+5. **Deploy**
+
+После деплоя получишь URL вида `https://football-predictor-xxx.vercel.app`
+
+### Шаг 3. Обнови CORS на бэкенде
+
+Подставь реальный URL Vercel:
+
+```bash
+fly secrets set CORS_ORIGIN="https://football-predictor-xxx.vercel.app" -a football-predictor-api
+```
+
+Или поправь `CORS_ORIGIN` в `fly.toml` и сделай `fly deploy`.
+
+### Шаг 4. Telegram BotFather
+
+Mini App URL и Menu Button → **URL Vercel**, не Fly:
+
+```
+https://football-predictor-xxx.vercel.app
+```
+
+### Шаг 5. Проверка
+
+1. `curl https://football-predictor-api.fly.dev/health` → ok
+2. Открой `https://твой-проект.vercel.app` в браузере — будет ошибка auth (нормально)
+3. Открой бота в Telegram → кнопка «Прогнозы» → должно работать
+
+### Обновление
+
+| Что менял | Команда |
+|-----------|---------|
+| Только фронт | push в GitHub → Vercel пересоберёт сам |
+| Только бэкенд | `fly deploy -a football-predictor-api` |
+| Сменил `VITE_API_BASE_URL` | Vercel → Settings → Environment Variables → **Redeploy** |
+
+### Проблемы Vercel + Fly
+
+| Проблема | Решение |
+|----------|---------|
+| CORS error в консоли | `CORS_ORIGIN` на Fly = точный URL Vercel (с `https://`, без `/` в конце) |
+| 401 в Telegram | Открывай через бота, не напрямую Vercel |
+| Старый API после смены URL | Redeploy на Vercel после изменения `VITE_API_BASE_URL` |
+| Fly API спит | Первый запрос 10–30 сек — cold start |
+
+### Почему не «всё на Vercel»
+
+Чтобы всё было на Vercel, пришлось бы:
+
+- переписать Go API на Serverless Functions
+- заменить SQLite на внешнюю БД (Supabase / Neon)
+- вынести worker в Vercel Cron
+
+Это другой проект. Текущий стек рассчитан на один Docker-контейнер или связку **Vercel (фронт) + Fly (API)**.
+
 Готово.
