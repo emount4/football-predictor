@@ -28,6 +28,13 @@ export interface MatchForUser {
   prediction_locked: boolean;
 }
 
+export interface MatchesPage {
+  items: MatchForUser[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
 export interface PredictionHistoryItem {
   match_id: number;
   home_team: string;
@@ -55,4 +62,19 @@ export interface LeaderboardItem {
 export interface ApiErrorBody {
   error?: string;
   message?: string;
+}
+
+export interface PredictionVoter {
+  username: string;
+  display_name: string;
+  photo_url: string;
+  user_choice: PredictionChoice;
+}
+
+export interface PredictionStats {
+  match_id: number;
+  total: number;
+  choices: Record<PredictionChoice, number>;
+  percent: Record<PredictionChoice, number>;
+  voters: PredictionVoter[];
 }

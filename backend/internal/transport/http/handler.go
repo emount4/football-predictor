@@ -147,8 +147,13 @@ func (h *Handler) getMatches(c *gin.Context) {
 	}
 
 	status := normalizeStatus(c.Query("status"))
+	page := queryInt(c, "page", 1)
+	limit := queryInt(c, "limit", 20)
+	if limit > 100 {
+		limit = 100
+	}
 
-	matches, err := h.matchService.GetMatchesForUser(user.TgID, status)
+	matches, err := h.matchService.GetMatchesForUser(user.TgID, status, page, limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Не удалось загрузить матчи"})
 		return

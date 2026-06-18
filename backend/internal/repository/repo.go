@@ -229,9 +229,25 @@ func (r *Repository) GetMatches(status string) ([]domain.Match, error) {
 	return matches, rows.Err()
 }
 
-func (r *Repository) GetMatchesForUser(tgID int64, status string) ([]domain.MatchForUser, error) {
+func (r *Repository) GetMatchesForUser(tgID int64, status string, page, limit int) (*domain.MatchesPage, error) {
 	where, args := buildMatchStatusFilter(status, "m")
-	args = append([]any{tgID}, args...)
+
+	countQuery := fmt.Sprintf(`SELECT COUNT(*) FROM matches m %s`, where)
+	var total int
+	if err := r.db.QueryRow(countQuery, args...).Scan(&total); err != nil {
+		return nil, err
+	}
+
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 {
+		limit = 20
+	}
+	offset := (page - 1) * limit
+
+	queryArgs := append([]any{tgID}, args...)
+	queryArgs = append(queryArgs, limit, offset)
 
 	query := fmt.Sprintf(`
 		SELECT m.api_id, m.league_id, m.league_name, m.home_team, m.away_team, m.match_time,
@@ -240,10 +256,11 @@ func (r *Repository) GetMatchesForUser(tgID int64, status string) ([]domain.Matc
 		FROM matches m
 		LEFT JOIN predictions p ON p.match_id = m.api_id AND p.user_id = ?
 		%s
-		ORDER BY m.match_time ASC
-	`, where)
+		ORDER BY %s
+		LIMIT ? OFFSET ?
+	`, where, buildMatchOrderBy(status, "m"))
 
-	rows, err := r.db.Query(query, args...)
+	rows, err := r.db.Query(query, queryArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -257,7 +274,16 @@ func (r *Repository) GetMatchesForUser(tgID int64, status string) ([]domain.Matc
 		}
 		items = append(items, item)
 	}
-	return items, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return &domain.MatchesPage{
+		Items: items,
+		Total: total,
+		Page:  page,
+		Limit: limit,
+	}, nil
 }
 
 func (r *Repository) GetMatchByID(apiID int64) (*domain.Match, error) {
@@ -437,7 +463,40 @@ func (r *Repository) GetPredictionStatsByMatch(matchID int64) (*domain.Predictio
 		}
 	}
 
+	voters, err := r.GetPredictionVotersByMatch(matchID)
+	if err != nil {
+		return nil, err
+	}
+	stats.Voters = voters
+
 	return stats, nil
+}
+
+func (r *Repository) GetPredictionVotersByMatch(matchID int64) ([]domain.PredictionVoter, error) {
+	query := `
+		SELECT u.username, u.display_name, u.photo_url, p.user_choice
+		FROM predictions p
+		JOIN users u ON u.tg_id = p.user_id
+		WHERE p.match_id = ?
+		ORDER BY p.user_choice, COALESCE(NULLIF(u.display_name, ''), u.username)
+	`
+
+	rows, err := r.db.Query(query, matchID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	voters := make([]domain.PredictionVoter, 0)
+	for rows.Next() {
+		var v domain.PredictionVoter
+		if err := rows.Scan(&v.Username, &v.DisplayName, &v.PhotoURL, &v.UserChoice); err != nil {
+			return nil, err
+		}
+		voters = append(voters, v)
+	}
+
+	return voters, rows.Err()
 }
 
 func (r *Repository) GetUserPredictionHistory(tgID int64, status string) ([]domain.PredictionHistoryItem, error) {
@@ -658,6 +717,19 @@ func nullableOutcome(outcome string) any {
 		return nil
 	}
 	return outcome
+}
+
+func buildMatchOrderBy(status string, alias string) string {
+	column := "match_time"
+	if alias != "" {
+		column = alias + ".match_time"
+	}
+
+	if strings.ToLower(strings.TrimSpace(status)) == "finished" {
+		return column + " DESC"
+	}
+
+	return column + " ASC"
 }
 
 func buildMatchStatusFilter(status string, alias string) (string, []any) {

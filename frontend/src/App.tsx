@@ -6,7 +6,8 @@ import type {
   LeaderboardItem,
   MatchForUser,
   PredictionChoice,
-  PredictionHistoryItem,
+  PredictionStats,
+  PredictionVoter,
   UserProfile,
 } from "./types";
 
@@ -16,11 +17,17 @@ const CHOICES: Array<{ value: PredictionChoice; label: string; hint: string }> =
   { value: "2", label: "П2", hint: "победа гостей" },
 ];
 
+const MATCHES_PAGE_SIZE = 20;
+
 function App() {
   const [page, setPage] = useState<AppPage>(() => getPageFromHash());
   const [me, setMe] = useState<UserProfile | null>(null);
   const [matches, setMatches] = useState<MatchForUser[]>([]);
+  const [matchesTotal, setMatchesTotal] = useState(0);
+  const [matchesPage, setMatchesPage] = useState(1);
   const [results, setResults] = useState<MatchForUser[]>([]);
+  const [resultsTotal, setResultsTotal] = useState(0);
+  const [resultsPage, setResultsPage] = useState(1);
   const [leaderboard, setLeaderboard] = useState<LeaderboardItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionMatchID, setActionMatchID] = useState<number | null>(null);
@@ -38,13 +45,15 @@ function App() {
       setMe(profile);
 
       if (page === "matches") {
-        const data = await api.getMatches("active");
-        setMatches(data);
+        const data = await api.getMatches("active", matchesPage, MATCHES_PAGE_SIZE);
+        setMatches(data.items);
+        setMatchesTotal(data.total);
       }
 
       if (page === "results") {
-        const data = await api.getMatches("finished");
-        setResults(data);
+        const data = await api.getMatches("finished", resultsPage, MATCHES_PAGE_SIZE);
+        setResults(data.items);
+        setResultsTotal(data.total);
       }
 
       if (page === "leaderboard") {
@@ -56,12 +65,16 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [api, page]);
+  }, [api, page, matchesPage, resultsPage]);
 
   useEffect(() => {
     initTelegram();
 
-    const onHashChange = () => setPage(getPageFromHash());
+    const onHashChange = () => {
+      setPage(getPageFromHash());
+      setMatchesPage(1);
+      setResultsPage(1);
+    };
     window.addEventListener("hashchange", onHashChange);
 
     if (!window.location.hash) {
@@ -81,9 +94,13 @@ function App() {
 
     try {
       await api.submitPrediction(matchID, choice);
-      const [profile, nextMatches] = await Promise.all([api.getMe(), api.getMatches("active")]);
+      const [profile, nextMatches] = await Promise.all([
+        api.getMe(),
+        api.getMatches("active", matchesPage, MATCHES_PAGE_SIZE),
+      ]);
       setMe(profile);
-      setMatches(nextMatches);
+      setMatches(nextMatches.items);
+      setMatchesTotal(nextMatches.total);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Не удалось сохранить прогноз");
     } finally {
@@ -118,12 +135,26 @@ function App() {
           {page === "matches" && (
             <MatchesPage
               matches={matches}
+              total={matchesTotal}
+              currentPage={matchesPage}
+              pageSize={MATCHES_PAGE_SIZE}
+              onPageChange={setMatchesPage}
               busyMatchID={actionMatchID}
+              api={api}
               onSubmitPrediction={submitPrediction}
             />
           )}
 
-          {page === "results" && <ResultsPage results={results} />}
+          {page === "results" && (
+            <ResultsPage
+              results={results}
+              total={resultsTotal}
+              currentPage={resultsPage}
+              pageSize={MATCHES_PAGE_SIZE}
+              onPageChange={setResultsPage}
+              api={api}
+            />
+          )}
 
           {page === "leaderboard" && <LeaderboardPage leaderboard={leaderboard} me={me} />}
         </>
@@ -174,11 +205,21 @@ function ProfilePill({ me }: { me: UserProfile | null }) {
 
 function MatchesPage({
   matches,
+  total,
+  currentPage,
+  pageSize,
+  onPageChange,
   busyMatchID,
+  api,
   onSubmitPrediction,
 }: {
   matches: MatchForUser[];
+  total: number;
+  currentPage: number;
+  pageSize: number;
+  onPageChange: (page: number) => void;
   busyMatchID: number | null;
+  api: ApiClient;
   onSubmitPrediction: (matchID: number, choice: PredictionChoice) => Promise<void>;
 }) {
   if (matches.length === 0) {
@@ -186,30 +227,118 @@ function MatchesPage({
   }
 
   return (
-    <section className="grid-list">
-      {matches.map((match) => (
-        <article className="match-card" key={match.api_id}>
-          <MatchHeader match={match} />
-
-          <div className="teams">
-            <TeamName name={match.home_team} />
-            <div className="versus">vs</div>
-            <TeamName name={match.away_team} />
-          </div>
-
-          <ChoiceRow
-            selected={match.my_prediction}
-            locked={match.prediction_locked || match.status !== "SCHEDULED"}
-            loading={busyMatchID === match.api_id}
-            onPick={(choice) => onSubmitPrediction(match.api_id, choice)}
+    <>
+      <section className="grid-list">
+        {matches.map((match) => (
+          <MatchCard
+            key={match.api_id}
+            match={match}
+            api={api}
+            busyMatchID={busyMatchID}
+            onSubmitPrediction={onSubmitPrediction}
           />
-        </article>
-      ))}
-    </section>
+        ))}
+      </section>
+      <Pagination page={currentPage} total={total} pageSize={pageSize} onPageChange={onPageChange} />
+    </>
   );
 }
 
-function ResultsPage({ results }: { results: MatchForUser[] }) {
+function MatchCard({
+  match,
+  api,
+  busyMatchID,
+  onSubmitPrediction,
+}: {
+  match: MatchForUser;
+  api: ApiClient;
+  busyMatchID: number | null;
+  onSubmitPrediction: (matchID: number, choice: PredictionChoice) => Promise<void>;
+}) {
+  const [statsOpen, setStatsOpen] = useState(false);
+  const [stats, setStats] = useState<PredictionStats | null>(null);
+  const [statsLoading, setStatsLoading] = useState(false);
+  const [statsError, setStatsError] = useState("");
+
+  async function toggleStats() {
+    if (statsOpen) {
+      setStatsOpen(false);
+      return;
+    }
+
+    setStatsOpen(true);
+    setStatsError("");
+    setStatsLoading(true);
+
+    try {
+      const data = await api.getPredictionStats(match.api_id);
+      setStats(data);
+    } catch (err) {
+      setStatsError(err instanceof Error ? err.message : "Не удалось загрузить статистику");
+    } finally {
+      setStatsLoading(false);
+    }
+  }
+
+  async function handlePick(choice: PredictionChoice) {
+    await onSubmitPrediction(match.api_id, choice);
+    if (statsOpen) {
+      setStatsLoading(true);
+      setStatsError("");
+      try {
+        const data = await api.getPredictionStats(match.api_id);
+        setStats(data);
+      } catch (err) {
+        setStatsError(err instanceof Error ? err.message : "Не удалось обновить статистику");
+      } finally {
+        setStatsLoading(false);
+      }
+    }
+  }
+
+  return (
+    <article className="match-card">
+      <MatchHeader match={match} />
+
+      <div className="teams">
+        <TeamName name={match.home_team} />
+        <div className="versus">vs</div>
+        <TeamName name={match.away_team} />
+      </div>
+
+      <ChoiceRow
+        selected={match.my_prediction}
+        locked={match.prediction_locked || match.status !== "SCHEDULED"}
+        loading={busyMatchID === match.api_id}
+        onPick={handlePick}
+      />
+
+      <div className="stats-toggle-row">
+        <button type="button" className="stats-toggle" onClick={() => void toggleStats()}>
+          {statsOpen ? "Скрыть статистику" : "Статистика прогнозов"}
+        </button>
+      </div>
+
+      {statsOpen && <PredictionStatsPanel stats={stats} loading={statsLoading} error={statsError} />}
+    </article>
+  );
+}
+
+function ResultsPage({
+  results,
+  total,
+  currentPage,
+  pageSize,
+  onPageChange,
+  api,
+}: {
+  results: MatchForUser[];
+  total: number;
+  currentPage: number;
+  pageSize: number;
+  onPageChange: (page: number) => void;
+  api: ApiClient;
+}) {
   if (results.length === 0) {
     return (
       <EmptyState
@@ -220,36 +349,131 @@ function ResultsPage({ results }: { results: MatchForUser[] }) {
   }
 
   return (
-    <section className="grid-list">
-      {results.map((match) => (
-        <article className="match-card" key={match.api_id}>
-          <div className="card-topline">
-            <span>{match.league_name}</span>
-            <StatusBadge status={match.status} />
-          </div>
+    <>
+      <section className="grid-list">
+        {results.map((match) => (
+          <ResultCard key={match.api_id} match={match} api={api} />
+        ))}
+      </section>
+      <Pagination page={currentPage} total={total} pageSize={pageSize} onPageChange={onPageChange} />
+    </>
+  );
+}
 
-          <div className="score-row">
-            <span>{match.home_team}</span>
-            <strong>{formatScore(match.home_goals, match.away_goals)}</strong>
-            <span>{match.away_team}</span>
-          </div>
+function ResultCard({ match, api }: { match: MatchForUser; api: ApiClient }) {
+  const [statsOpen, setStatsOpen] = useState(false);
+  const [stats, setStats] = useState<PredictionStats | null>(null);
+  const [statsLoading, setStatsLoading] = useState(false);
+  const [statsError, setStatsError] = useState("");
+  const predictionResult = getPredictionResult(match);
 
-          <div className="result-footer">
-            <span>
-              Исход: <strong>{match.outcome ? choiceLabel(match.outcome as PredictionChoice) : "—"}</strong>
+  async function toggleStats() {
+    if (statsOpen) {
+      setStatsOpen(false);
+      return;
+    }
+
+    setStatsOpen(true);
+    setStatsError("");
+    setStatsLoading(true);
+
+    try {
+      const data = await api.getPredictionStats(match.api_id);
+      setStats(data);
+    } catch (err) {
+      setStatsError(err instanceof Error ? err.message : "Не удалось загрузить статистику");
+    } finally {
+      setStatsLoading(false);
+    }
+  }
+
+  return (
+    <article
+      className={`match-card ${
+        predictionResult === true
+          ? "match-card-result-ok"
+          : predictionResult === false
+            ? "match-card-result-bad"
+            : ""
+      }`}
+    >
+      <div className="card-topline">
+        <span>{match.league_name}</span>
+        <div className="badges">
+          {predictionResult !== null && (
+            <span className={`result-verdict ${predictionResult ? "result-ok" : "result-bad"}`}>
+              {predictionResult ? "Угадал · +1" : "Промах"}
             </span>
+          )}
+          <StatusBadge status={match.status} />
+        </div>
+      </div>
 
-            {match.my_prediction ? (
-              <span>
-                Твой прогноз: <strong>{choiceLabel(match.my_prediction)}</strong>
-              </span>
-            ) : (
-              <span>Без прогноза</span>
-            )}
-          </div>
-        </article>
-      ))}
-    </section>
+      <div className="score-row">
+        <span>{match.home_team}</span>
+        <strong>{formatScore(match.home_goals, match.away_goals)}</strong>
+        <span>{match.away_team}</span>
+      </div>
+
+      <div className="result-footer">
+        <span>
+          Исход: <strong>{match.outcome ? choiceLabel(match.outcome as PredictionChoice) : "—"}</strong>
+        </span>
+
+        {match.my_prediction ? (
+          <span className={predictionResult === true ? "result-ok" : predictionResult === false ? "result-bad" : ""}>
+            Твой прогноз: <strong>{choiceLabel(match.my_prediction)}</strong>
+          </span>
+        ) : (
+          <span className="result-muted">Без прогноза</span>
+        )}
+      </div>
+
+      <div className="stats-toggle-row">
+        <button type="button" className="stats-toggle" onClick={() => void toggleStats()}>
+          {statsOpen ? "Скрыть статистику" : "Статистика прогнозов"}
+        </button>
+      </div>
+
+      {statsOpen && <PredictionStatsPanel stats={stats} loading={statsLoading} error={statsError} />}
+    </article>
+  );
+}
+
+function Pagination({
+  page,
+  total,
+  pageSize,
+  onPageChange,
+}: {
+  page: number;
+  total: number;
+  pageSize: number;
+  onPageChange: (page: number) => void;
+}) {
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+  if (totalPages <= 1) {
+    return null;
+  }
+
+  return (
+    <nav className="pagination" aria-label="Навигация по страницам">
+      <button type="button" className="pagination-btn" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>
+        Назад
+      </button>
+      <span className="pagination-info">
+        Страница {page} из {totalPages}
+      </span>
+      <button
+        type="button"
+        className="pagination-btn"
+        disabled={page >= totalPages}
+        onClick={() => onPageChange(page + 1)}
+      >
+        Вперёд
+      </button>
+    </nav>
   );
 }
 
@@ -296,6 +520,103 @@ function MatchHeader({ match }: { match: MatchForUser }) {
 
 function TeamName({ name }: { name: string }) {
   return <div className="team-name">{name}</div>;
+}
+
+function PredictionStatsPanel({
+  stats,
+  loading,
+  error,
+}: {
+  stats: PredictionStats | null;
+  loading: boolean;
+  error: string;
+}) {
+  if (loading) {
+    return <div className="stats-panel stats-panel-loading">Загрузка...</div>;
+  }
+
+  if (error) {
+    return <div className="stats-panel stats-panel-error">{error}</div>;
+  }
+
+  if (!stats || stats.total === 0) {
+    return <div className="stats-panel stats-panel-empty">Пока никто не проголосовал</div>;
+  }
+
+  const segments = CHOICES.map((choice) => ({
+    ...choice,
+    percent: stats.percent[choice.value] ?? 0,
+    count: stats.choices[choice.value] ?? 0,
+  }));
+
+  const votersByChoice: Record<PredictionChoice, PredictionVoter[]> = { "1": [], X: [], "2": [] };
+  for (const voter of stats.voters) {
+    votersByChoice[voter.user_choice].push(voter);
+  }
+
+  return (
+    <div className="stats-panel">
+      <div className="stats-bar" aria-label="Распределение прогнозов">
+        {segments.map((segment) =>
+          segment.percent > 0 ? (
+            <div
+              key={segment.value}
+              className={`stats-bar-segment stats-bar-${segment.value.toLowerCase()}`}
+              style={{ width: `${segment.percent}%` }}
+              title={`${segment.label}: ${formatPercent(segment.percent)}`}
+            />
+          ) : null,
+        )}
+      </div>
+
+      <div className="stats-legend">
+        {segments.map((segment) => (
+          <div key={segment.value} className="stats-legend-item">
+            <span className={`stats-dot stats-dot-${segment.value.toLowerCase()}`} />
+            <span>
+              {segment.label}: <strong>{formatPercent(segment.percent)}</strong>
+              <span className="stats-count"> ({segment.count})</span>
+            </span>
+          </div>
+        ))}
+      </div>
+
+      <div className="stats-voters">
+        {CHOICES.map((choice) => {
+          const voters = votersByChoice[choice.value];
+          if (voters.length === 0) {
+            return null;
+          }
+
+          return (
+            <div className="stats-voter-group" key={choice.value}>
+              <div className="stats-voter-group-title">
+                {choiceLabel(choice.value)} · {voters.length}
+              </div>
+              <div className="stats-voter-list">
+                {voters.map((voter) => (
+                  <VoterChip key={`${voter.username}-${voter.user_choice}`} voter={voter} />
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="stats-total">Всего прогнозов: {stats.total}</div>
+    </div>
+  );
+}
+
+function VoterChip({ voter }: { voter: PredictionVoter }) {
+  const name = voter.display_name || voter.username || "Игрок";
+
+  return (
+    <div className="voter-chip">
+      {voter.photo_url ? <img src={voter.photo_url} alt="" /> : <div className="avatar-fallback">{name[0]}</div>}
+      <span>{name}</span>
+    </div>
+  );
 }
 
 function ChoiceRow({
@@ -388,6 +709,24 @@ function choiceLabel(choice: PredictionChoice): string {
   if (choice === "1") return "П1";
   if (choice === "2") return "П2";
   return "X";
+}
+
+function getPredictionResult(match: MatchForUser): boolean | null {
+  if (!match.my_prediction || !match.outcome) {
+    return null;
+  }
+
+  return match.my_prediction === match.outcome;
+}
+
+function formatPercent(value: number): string {
+  if (value === 0) {
+    return "0%";
+  }
+  if (Number.isInteger(value)) {
+    return `${value}%`;
+  }
+  return `${value.toFixed(1)}%`;
 }
 
 export default App;

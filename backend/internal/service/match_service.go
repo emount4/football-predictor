@@ -186,8 +186,8 @@ func (s *MatchService) FetchDailyMatches() error {
 	return nil
 }
 
-func (s *MatchService) GetMatchesForUser(tgID int64, status string) ([]domain.MatchForUser, error) {
-	return s.repo.GetMatchesForUser(tgID, status)
+func (s *MatchService) GetMatchesForUser(tgID int64, status string, page, limit int) (*domain.MatchesPage, error) {
+	return s.repo.GetMatchesForUser(tgID, status, page, limit)
 }
 
 func (s *MatchService) GetMatchForUser(tgID int64, matchID int64) (*domain.MatchForUser, error) {

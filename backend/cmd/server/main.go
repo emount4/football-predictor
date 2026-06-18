@@ -52,6 +52,12 @@ func main() {
 	handler := httptransport.NewHandler(authService, matchService, predictService)
 	router := handler.InitRoutes()
 
+	staticDir := getEnv("STATIC_DIR", "")
+	if staticDir != "" {
+		httptransport.MountStatic(router, staticDir)
+		log.Printf("Serving static files from %s", staticDir)
+	}
+
 	log.Printf("HTTP server listening on :%s", port)
 	if err := router.Run(":" + port); err != nil {
 		log.Fatalf("failed to run server: %v", err)

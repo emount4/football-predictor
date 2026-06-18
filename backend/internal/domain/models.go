@@ -37,6 +37,13 @@ type MatchForUser struct {
 	PredictionLocked bool    `json:"prediction_locked"`
 }
 
+type MatchesPage struct {
+	Items []MatchForUser `json:"items"`
+	Total int            `json:"total"`
+	Page  int            `json:"page"`
+	Limit int            `json:"limit"`
+}
+
 type PredictionHistoryItem struct {
 	MatchID       int64     `json:"match_id"`
 	HomeTeam      string    `json:"home_team"`
@@ -53,11 +60,19 @@ type PredictionHistoryItem struct {
 	PointsAwarded int       `json:"points_awarded"`
 }
 
+type PredictionVoter struct {
+	Username    string `json:"username"`
+	DisplayName string `json:"display_name"`
+	PhotoURL    string `json:"photo_url"`
+	UserChoice  string `json:"user_choice"`
+}
+
 type PredictionStats struct {
 	MatchID int64              `json:"match_id"`
 	Total   int                `json:"total"`
 	Choices map[string]int     `json:"choices"`
 	Percent map[string]float64 `json:"percent"`
+	Voters  []PredictionVoter  `json:"voters"`
 }
 
 type LeaderboardItem struct {
@@ -111,7 +126,7 @@ type MatchRepository interface {
 	SaveMatches(matches []Match) error
 	GetActiveMatches() ([]Match, error)
 	GetMatches(status string) ([]Match, error)
-	GetMatchesForUser(tgID int64, status string) ([]MatchForUser, error)
+	GetMatchesForUser(tgID int64, status string, page, limit int) (*MatchesPage, error)
 	GetMatchByID(apiID int64) (*Match, error)
 	GetMatchForUser(apiID int64, tgID int64) (*MatchForUser, error)
 	GetLeagues() ([]LeagueInfo, error)
@@ -123,13 +138,14 @@ type PredictRepository interface {
 	SavePrediction(pred *Prediction) error
 	GetPredictionsByMatch(matchID int64) ([]Prediction, error)
 	GetPredictionStatsByMatch(matchID int64) (*PredictionStats, error)
+	GetPredictionVotersByMatch(matchID int64) ([]PredictionVoter, error)
 	GetUserPredictionHistory(tgID int64, status string) ([]PredictionHistoryItem, error)
 	UpdatePredictionStatus(predID int64, isCorrect bool) error
 	SetPredictionResult(predID int64, userID int64, isCorrect bool) error
 }
 
 type MatchService interface {
-	GetMatchesForUser(tgID int64, status string) ([]MatchForUser, error)
+	GetMatchesForUser(tgID int64, status string, page, limit int) (*MatchesPage, error)
 	GetMatchForUser(tgID int64, matchID int64) (*MatchForUser, error)
 	GetPredictionStats(matchID int64) (*PredictionStats, error)
 	GetPredictionHistory(tgID int64, status string) ([]PredictionHistoryItem, error)

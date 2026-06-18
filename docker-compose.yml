@@ -1,0 +1,19 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      PORT: "8080"
+      DB_PATH: /data/football.db
+      SCHEMA_PATH: internal/repository/schema.sql
+      STATIC_DIR: static
+      ENABLE_WORKER: "true"
+    volumes:
+      - football-data:/data
+    restart: unless-stopped
+
+volumes:
+  football-data:

@@ -2,8 +2,10 @@ import type {
   ApiErrorBody,
   LeaderboardItem,
   MatchForUser,
+  MatchesPage,
   PredictionChoice,
   PredictionHistoryItem,
+  PredictionStats,
   UserProfile,
 } from "./types";
 
@@ -21,8 +23,17 @@ export class ApiClient {
     return this.request<UserProfile>("/api/me");
   }
 
-  async getMatches(status: "active" | "scheduled" | "live" | "finished" | "all" = "active"): Promise<MatchForUser[]> {
-    return this.request<MatchForUser[]>(`/api/matches?status=${encodeURIComponent(status)}`);
+  async getMatches(
+    status: "active" | "scheduled" | "live" | "finished" | "all" = "active",
+    page = 1,
+    limit = 20,
+  ): Promise<MatchesPage> {
+    const params = new URLSearchParams({
+      status,
+      page: String(page),
+      limit: String(limit),
+    });
+    return this.request<MatchesPage>(`/api/matches?${params.toString()}`);
   }
 
   async getMyResults(status: "finished" | "all" = "finished"): Promise<PredictionHistoryItem[]> {
@@ -41,6 +52,10 @@ export class ApiClient {
         user_choice: userChoice,
       }),
     });
+  }
+
+  async getPredictionStats(matchID: number): Promise<PredictionStats> {
+    return this.request<PredictionStats>(`/api/matches/${matchID}/prediction-stats`);
   }
 
   private async request<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
